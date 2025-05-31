@@ -1,1 +1,742 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"/>
+<title>Digital Eye Training</title>
+<script src="https://cdn.jsdelivr.net/npm/p5@1.5.0/lib/p5.min.js"></script>
+<style>
+  body {
+    margin: 0;
+    background: #1e1e1e;
+    color: #fff;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    user-select: none;
+  }
+  button {
+    margin-right: 8px;
+    background: #94b9ff;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 5px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+  }
+  button:hover {
+    background: #005fa3;
+  }
+</style>
+</head>
+<body>
+<script>
+class Eye {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.px = 0;
+        this.py = 0;
+        this.pupilSize = 40;
+        this.highlightOffset = 10;
+        this.blinkAmount = 0; // Amount of the blink (0 = eyes open, 1 = eyes fully closed)
+    }
+
+    update(tx, ty) {
+        this.px += (tx - this.px) * 0.1;
+        this.py += (ty - this.py) * 0.1;
+        this.eyebrowOffsetY = 120; // base vertical distance
+        this.eyebrowRaise = 0;     // animated raise value
+    }
+
+    display() {
+        if (this.blinkAmount < 1) {
+            fill(255);
+            stroke(0);
+            strokeWeight(25);
+            ellipse(this.x, this.y, 120, 120);
+
+            fill(0);
+            noStroke();
+            ellipse(this.x + this.px, this.y + this.py, this.pupilSize, this.pupilSize);
+
+            fill(255);
+            ellipse(this.x + this.px + this.highlightOffset, this.y + this.py - this.highlightOffset, 15, 15);
+        }
+
+        if (this.blinkAmount > 0) {
+            fill(30);
+            noStroke();
+            arc(this.x, this.y, 120, 120, PI, TWO_PI, CHORD);
+            arc(this.x, this.y, 120, 120, 0, PI, CHORD);
+        }
+
+        this.drawEyebrow();
+    }
+
+    drawEyebrow() {
+        stroke(80);
+        strokeWeight(16);
+        noFill();
+        let offsetY = this.eyebrowOffsetY - this.eyebrowRaise;
+        let w = 140;
+        let h = 30 + sin(frameCount * 0.1) * this.blinkAmount * 2;
+        arc(this.x, this.y - offsetY, w, h, PI, TWO_PI);
+    }
+}
+
+let eyes = [];
+let step = 0;
+let steps = ["Horizontal", "Vertical", "Square", "Diagonal", "Diagonal 1", "Circular", "Figure 8"];
+let maxReps = [6, 6, 8, 6, 6, 5, 5];
+let currentRep = 0;
+let target = { x: 0, y: 0 };
+let t = 0;
+let state = "idle";
+let previousState = null; // to keep track for pause/resume in normal and massage states
+let delayCounter = 0;
+let pauseBetweenSteps = 180;
+let dotTimer = 0;
+let fixationDots = [];
+let completedReps = 0;
+let totalReps = maxReps.reduce((a, b) => a + b, 0);
+let hasSpokenCircular = false;
+let hasSpokenFigure8 = false;
+let voiceEnabled = true;
+
+let relaxTimer = 0;
+let relaxDuration = 20 * 60;
+let blinkCycleFrames = 180;
+let hasSpokenRelaxClose = false;
+let massagePoints = [];
+let massageTimer = 0;
+let massageIndex = 0;
+let massageSubIndex = 0;
+let massagePointTimer = 0;
+let massageDuration = 20 * 60;
+let massageStates = ["Temples", "Under Eyes", "Brow Ridge"];
+let massageState = "";
+let massageActive = false;
+
+let leftMassageAngle = 0;
+let rightMassageAngle = 0;
+
+let smoothSpeed = 0.2;
+let theta = 0;
+
+// EyeFocus variables
+let mode = "idle";
+let previousMode = null;  // store mode for pause/resume in EyeFocus
+let timer;
+let dot, targets = [], flashes = [];
+let score = 0, lastSwitch = 0;
+let voice;
+let eyeFocusActive = false;
+
+function setup() {
+    createCanvas(800, 400);
+    eyes.push(new Eye(250, height / 2));
+    eyes.push(new Eye(550, height / 2));
+    say("Welcome to Digital Eye Training. Click Start.");
+    createButtons();
+    voice = window.speechSynthesis;
+}
+
+function centerEyes() {
+    target.x = 0;
+    target.y = 0;
+}
+
+function createButtons() {
+    createButton("▶️ Start").position(20, 20).mousePressed(() => {
+        centerEyes();
+        state = "idle";
+        step = 0;
+        currentRep = 0;
+        completedReps = 0;
+        t = 0;
+        hasSpokenCircular = false;
+        hasSpokenFigure8 = false;
+
+        let msg = new SpeechSynthesisUtterance(`Begin: ${steps[step]}`);
+        msg.onend = () => {
+            state = "playing";
+        };
+        if (voiceEnabled) speechSynthesis.speak(msg);
+    });
+
+    createButton("⏸ Pause").position(20,60).mousePressed(() => {
+        // Pause logic for EyeFocus mode:
+        if (mode !== "idle" && mode !== "paused") {
+            previousMode = mode;
+            mode = "paused";
+            say("Paused");
+            return;
+        }
+
+        // Pause logic for massage
+        if (state === "massage") {
+            previousState = state;
+            state = "paused";
+            say("Paused");
+            return;
+        }
+
+        // Pause logic for normal playing state
+        if (state === "playing") {
+            previousState = state;
+            state = "paused";
+            centerEyes();
+            say("Paused");
+            return;
+        }
+    });
+
+    createButton("▶️ Resume").position(20,100).mousePressed(() => {
+        // Resume logic for EyeFocus
+        if (mode === "paused" && previousMode) {
+            mode = previousMode;
+            previousMode = null;
+            say("Resuming");
+            return;
+        }
+
+        // Resume logic for massage
+        if (state === "paused" && previousState === "massage") {
+            state = previousState;
+            previousState = null;
+            say("Resuming");
+            return;
+        }
+
+        // Resume logic for normal play
+        if (state === "paused" && previousState === "playing") {
+            state = previousState;
+            previousState = null;
+            say("Resuming");
+            return;
+        }
+    });
+
+    createButton("🧘 Relax Mode").position(120, 20).mousePressed(() => {
+        centerEyes();
+        state = "relaxing";
+        relaxTimer = 0;
+        hasSpokenRelaxClose = false;
+        say("Blink Time");
+    });
+
+    createButton("💆 Eye Massage").position(250, 20).mousePressed(() => {
+        state = "massage";
+        massageTimer = 0;
+        massageIndex = 0;
+        massagePoints = [];
+        massageActive = true;
+        massageState = massageStates[0];
+        loadMassagePoints(massageState);
+        say("Start Eye Massage. Gently press on each point.");
+    });
+
+    createButton("👁️ EyeFocus").position(390, 20).mousePressed(() => {
+        startEyeFocus();
+    });
+}
+
+function startEyeFocus() {
+    nextMode("warmup", 30);
+}
+
+function draw() {
+    background(30);
+
+    drawLabels();
+    drawProgressBar();
+
+    theta += 0.03;
+
+    if (mode !== "idle" && mode !== "paused") {
+        fill(255);
+        textAlign(CENTER);
+        text(`Mode: ${mode.toUpperCase()}  |  Time Left: ${ceil((timer - millis()) / 1000)}s`, width / 2, 30);
+
+        switch (mode) {
+            case "warmup": drawWarmup(); break;
+            case "zigzag": drawZigzag(); break;
+            case "burst": drawBurst(); break;
+            case "dual": drawDual(); break;
+            case "peripheral": drawPeripheral(); break;
+            case "cooldown": drawCooldown(); break;
+            case "done": drawEnd(); break;
+        }
+
+        if (millis() > timer && mode !== "done") {
+            advanceMode();
+        }
+    }
+
+    // Draw eyes and nose ONLY if not in EyeFocus mode to avoid overlap
+    if (mode === "idle") {
+        for (let eye of eyes) {
+            eye.update(target.x, target.y);
+            eye.display();
+        }
+        drawNose();
+    }
+
+    if (state === "relaxing") {
+        drawRelaxMode();
+    }
+
+    if (state === "playing") {
+        updateTarget();
+        t++;
+        if (t % 60 === 0) handleVoicePrompts();
+
+        if (step < steps.length) {
+            if (step !== 8) {
+                if (t > 60) {
+                    currentRep++;
+                    completedReps++;
+                    t = 0;
+                    if (currentRep >= maxReps[step]) nextStep();
+                }
+            } else {
+                dotTimer++;
+                fixationDots.forEach(d => d.life--);
+                fixationDots = fixationDots.filter(d => d.life > 0);
+                if (dotTimer > 90) {
+                    fixationDots.push({ x: random(-50, 50), y: random(-50, 50), life: 60 });
+                    dotTimer = 0;
+                    currentRep++;
+                    completedReps++;
+                    if (currentRep >= maxReps[step]) nextStep();
+                }
+                if (fixationDots.length > 0) {
+                    const d = fixationDots[0];
+                    target.x = d.x;
+                    target.y = d.y;
+                }
+            }
+        }
+    } else if (state === "waiting") {
+        delayCounter++;
+        if (delayCounter > pauseBetweenSteps) {
+            state = "playing";
+            t = 0;
+        }
+    }
+
+    if (state === "massage") {
+        massageTimer++;
+        // massageTimer stops incrementing if paused
+        drawMassageRoutine();
+    }
+}
+
+function drawMassageRoutine() {
+    fill(255);
+    textAlign(CENTER);
+    textSize(24);
+    text(`💆 Massage: ${massageState}`, width / 2, 320);
+
+    drawMassagePoints();
+
+    if (massageTimer % (30 * 60) === 0 && massageActive) {
+        massageIndex++;
+        if (massageIndex < massageStates.length) {
+            massageState = massageStates[massageIndex];
+            loadMassagePoints(massageState);
+            say(`Next: ${massageState}`);
+        } else {
+            massageActive = false;
+            state = "idle";
+            say("Massage complete. Great job.");
+        }
+    }
+}
+
+function drawMassagePoints() {
+    const duration = 10000;
+    if (!massagePoints || massagePoints.length === 0) return;
+
+    if (massageSubIndex >= massagePoints.length) {
+        massageSubIndex = 0;
+        massagePointTimer = millis();
+        return;
+    }
+
+    if (millis() - massagePointTimer > duration) {
+        massageSubIndex++;
+        if (massageSubIndex >= massagePoints.length) massageSubIndex = 0;
+        massagePointTimer = millis();
+    }
+
+    const currentPair = massagePoints[massageSubIndex];
+    if (!currentPair || currentPair.length !== 2) return;
+
+    leftMassageAngle += 0.05;
+    rightMassageAngle -= 0.05;
+
+    const radius = 10;
+
+    let left = currentPair[0];
+    let right = currentPair[1];
+
+    let leftX = left.x + cos(leftMassageAngle) * radius;
+    let leftY = left.y + sin(leftMassageAngle) * radius;
+
+    let rightX = right.x + cos(rightMassageAngle) * radius;
+    let rightY = right.y + sin(rightMassageAngle) * radius;
+
+    drawPulsingCircle(leftX, leftY, 12);
+    drawPulsingCircle(rightX, rightY, 12);
+}
+
+function drawPulsingCircle(x, y, size) {
+    noFill();
+    stroke(0, 153, 255);
+    strokeWeight(2);
+    ellipse(x, y, size, size);
+}
+
+function drawRelaxMode() {
+    fill(255);
+    textAlign(CENTER);
+    textSize(24);
+    text("🧘 Relax and Blink", width / 2, 350);
+
+    relaxTimer++;
+
+    let cycleProgress = (relaxTimer % blinkCycleFrames) / blinkCycleFrames;
+
+    if (cycleProgress < 0.05 && !hasSpokenRelaxClose) {
+        say("Close...");
+        eyes.forEach(e => e.blinkAmount = 1);
+        hasSpokenRelaxClose = true;
+    }
+
+    if (cycleProgress > 0.55 && hasSpokenRelaxClose) {
+        say("...open.");
+        eyes.forEach(e => e.blinkAmount = 0);
+        hasSpokenRelaxClose = false;
+    }
+
+    if (eyes[0].blinkAmount === 1) {
+        fill(0);
+        noStroke();
+        rect(0, 0, width, height);
+    }
+
+    if (relaxTimer >= relaxDuration) {
+        state = "idle";
+        eyes.forEach(e => e.blinkAmount = 0);
+        say("Relaxation complete. Well done.");
+    }
+}
+
+function drawNose() {
+    fill(120);
+    noStroke();
+    ellipse(width / 2, height / 2 + 20, 30, 24);
+}
+
+function nextStep() {
+    step++;
+    currentRep = 0;
+    if (step >= steps.length) {
+        state = "idle";
+        say("Training complete. Great job!");
+        return;
+    }
+    centerEyes();
+    state = "waiting";
+    delayCounter = 0;
+    say(`Next: ${steps[step]} in 3 seconds`);
+}
+
+function handleVoicePrompts() {
+    let amt = 40;
+    let move = steps[step];
+
+    if (move === "Horizontal") {
+        if (currentRep % 2 === 0) {
+            say("Look left");
+            target.x = -amt;
+            target.y = 0;
+        } else {
+            say("Look right");
+            target.x = amt;
+            target.y = 0;
+        }
+    } else if (move === "Vertical") {
+        if (currentRep % 2 === 0) {
+            say("Look up");
+            target.x = 0;
+            target.y = -amt;
+        } else {
+            say("Look down");
+            target.x = 0;
+            target.y = amt;
+        }
+    } else if (move === "Square") {
+        const squarePath = [
+            { x: -amt, y: -amt, label: "Top left" },
+            { x: amt, y: -amt, label: "Top right" },
+            { x: amt, y: amt, label: "Bottom right" },
+            { x: -amt, y: amt, label: "Bottom left" }
+        ];
+        let pos = currentRep % squarePath.length;
+        say(squarePath[pos].label);
+        target.x = squarePath[pos].x;
+        target.y = squarePath[pos].y;
+    } else if (move === "Diagonal") {
+        if (currentRep % 2 === 0) {
+            say("Top left");
+            target.x = -amt;
+            target.y = -amt;
+        } else {
+            say("Bottom right");
+            target.x = amt;
+            target.y = amt;
+        }
+    } else if (move === "Diagonal 1") {
+        if (currentRep % 2 === 0) {
+            say("Top right");
+            target.x = amt;
+            target.y = -amt;
+        } else {
+            say("Bottom left");
+            target.x = -amt;
+            target.y = amt;
+        }
+    } else if (move === "Circular" && !hasSpokenCircular) {
+        say("Move in a circle");
+        hasSpokenCircular = true;
+    } else if (move === "Figure 8" && !hasSpokenFigure8) {
+        say("Trace a figure eight");
+        hasSpokenFigure8 = true;
+    }
+}
+
+function drawLabels() {
+    if (state === "playing") {
+        fill(255);
+        textAlign(CENTER);
+        textSize(20);
+        text(`Step: ${steps[step]}`, width / 2, 305);
+        text(`Reps: ${currentRep + 1} / ${maxReps[step]}`, width / 2, 330);
+    }
+}
+
+function drawProgressBar() {
+    if (state === "playing") {
+        let barWidth = width - 40;
+        let pct = completedReps / totalReps;
+        fill(100);
+        rect(20, height - 30, barWidth, 10);
+        fill(0, 255, 0);
+        rect(20, height - 30, barWidth * pct, 10);
+    }
+}
+
+function loadMassagePoints(area) {
+    massagePoints = [];
+    if (area === "Temples") {
+        massagePoints = [
+            [{ x: 150, y: 200 }, { x: 650, y: 200 }],
+            [{ x: 100, y: 200 }, { x: 700, y: 200 }],
+            [{ x: 50, y: 200 }, { x: 750, y: 200 }]
+        ];
+    } else if (area === "Under Eyes") {
+        massagePoints = [
+            [{ x: 200, y: 280 }, { x: 600, y: 280 }],
+            [{ x: 250, y: 290 }, { x: 550, y: 290 }],
+            [{ x: 300, y: 280 }, { x: 500, y: 280 }]
+        ];
+    } else if (area === "Brow Ridge") {
+        massagePoints = [
+            [{ x: 200, y: 115 }, { x: 600, y: 115 }],
+            [{ x: 250, y: 115 }, { x: 550, y: 115 }],
+            [{ x: 300, y: 115 }, { x: 500, y: 115 }]
+        ];
+    }
+    massageSubIndex = 0;
+    massagePointTimer = millis();
+}
+
+function updateTarget() {
+    let amt = 40;
+    let smoothSpeed = 0.2;
+
+    if (steps[step] === "Horizontal") {
+        target.x = (currentRep % 2 === 0) ? -amt : amt;
+        target.y = 0;
+    } else if (steps[step] === "Vertical") {
+        target.x = 0;
+        target.y = (currentRep % 2 === 0) ? -amt : amt;
+    } else if (steps[step] === "Square") {
+        const squarePath = [
+            { x: -amt, y: -amt },
+            { x: amt, y: -amt },
+            { x: amt, y: amt },
+            { x: -amt, y: amt }
+        ];
+        let pos = currentRep % squarePath.length;
+        target.x = lerp(target.x, squarePath[pos].x, smoothSpeed);
+        target.y = lerp(target.y, squarePath[pos].y, smoothSpeed);
+    } else if (steps[step] === "Diagonal") {
+        target.x = lerp(target.x, (currentRep % 2 === 0) ? -amt : amt, smoothSpeed);
+        target.y = lerp(target.y, (currentRep % 2 === 0) ? -amt : amt, smoothSpeed);
+    } else if (steps[step] === "Diagonal 1") {
+        if (currentRep % 2 === 0) {
+            target.x = lerp(target.x, amt, smoothSpeed);
+            target.y = lerp(target.y, -amt, smoothSpeed);
+        } else {
+            target.x = lerp(target.x, -amt, smoothSpeed);
+            target.y = lerp(target.y, amt, smoothSpeed);
+        }
+    } else if (steps[step] === "Circular") {
+        target.x = cos(theta) * amt;
+        target.y = sin(theta) * amt;
+    } else if (steps[step] === "Figure 8") {
+        target.x = cos(theta) * amt;
+        target.y = sin(2 * theta) * amt * 0.5;
+    }
+}
+
+function drawWarmup() {
+    if (frameCount % 30 === 0) dot = createVector(random(100, width - 100), random(100, height - 100));
+    fill(0, 255, 0);
+    ellipse(dot.x, dot.y, 30);
+    text("Focus on the green dot", width / 2, height - 40);
+}
+
+function drawZigzag() {
+    let t = (millis() - lastSwitch) / 1000;
+    let x = width * (t % 2 < 1 ? t % 1 : 1 - (t % 1));
+    let y = height / 2 + sin(t * TWO_PI * 1.5) * 100;
+    fill(0, 200, 255);
+    ellipse(x, y, 25);
+    text("Follow the moving dot", width / 2, height - 40);
+}
+
+function drawBurst() {
+    if (random() < 0.02) {
+        targets.push({ x: random(100, width - 100), y: random(100, height - 100), created: millis() });
+    }
+    targets = targets.filter(t => millis() - t.created < 2000);
+    for (let t of targets) {
+        fill(255, 50, 50);
+        ellipse(t.x, t.y, 30);
+    }
+    text("Click targets quickly!", width / 2, height - 40);
+}
+
+function mousePressed() {
+    if (mode === "burst") {
+        for (let i = targets.length - 1; i >= 0; i--) {
+            let t = targets[i];
+            if (dist(mouseX, mouseY, t.x, t.y) < 20) {
+                score++;
+                targets.splice(i, 1);
+                break;
+            }
+        }
+    }
+}
+
+function drawDual() {
+    let t = millis() / 1000;
+    let dot1 = createVector(width / 2 + sin(t * 2) * 200, height / 3);
+    let dot2 = createVector(width / 2 + cos(t * 3) * 200, 2 * height / 3);
+    fill(255, 255, 0);
+    ellipse(dot1.x, dot1.y, 25);
+    fill(0, 255, 255);
+    ellipse(dot2.x, dot2.y, 25);
+    text("Switch focus between the two dots", width / 2, height - 40);
+}
+
+function drawPeripheral() {
+    if (random() < 0.01) {
+        let side = floor(random(4));
+        let pos = [
+            createVector(50, 50),
+            createVector(width - 50, 50),
+            createVector(50, height - 50),
+            createVector(width - 50, height - 50)
+        ][side];
+        flashes.push({ pos, time: millis() });
+    }
+    flashes = flashes.filter(f => millis() - f.time < 300);
+    fill(255);
+    ellipse(width / 2, height / 2, 40);
+    for (let f of flashes) {
+        fill(255, 0, 200);
+        ellipse(f.pos.x, f.pos.y, 20);
+    }
+    text("Keep eyes center. Count the flashes.", width / 2, height - 40);
+}
+
+function drawCooldown() {
+    let blink = floor((millis() / 1000) % 2);
+    background(blink ? 0 : 30);
+    fill(200);
+    text(blink ? "Close your eyes..." : "Open your eyes...", width / 2, height / 2);
+}
+
+function drawEnd() {
+    fill(0, 255, 0);
+    textAlign(CENTER);
+    textSize(32);
+    text(`Training Complete! Your score: ${score}`, width / 2, height / 2);
+    noLoop();
+}
+
+function nextMode(m, seconds) {
+    mode = m;
+    timer = millis() + seconds * 1000;
+    lastSwitch = millis();
+    dot = createVector(random(width), random(height));
+    targets = [];
+    flashes = [];
+
+    let prompts = {
+        warmup: "Focus on the dot.",
+        zigzag: "Follow the moving dot. Stay locked in.",
+        burst: "React now! Tap the targets as fast as you can.",
+        dual: "Switch focus between the two moving dots.",
+        peripheral: "Eyes forward. Watch for flashes in the corners.",
+        cooldown: "Close and open your eyes. Relax and breathe."
+    };
+    if (prompts[m]) speak(prompts[m]);
+}
+
+function advanceMode() {
+    if (mode === "warmup") nextMode("zigzag", 30);
+    else if (mode === "zigzag") nextMode("burst", 30);
+    else if (mode === "burst") nextMode("dual", 30);
+    else if (mode === "dual") nextMode("peripheral", 30);
+    else if (mode === "peripheral") nextMode("cooldown", 30);
+    else nextMode("done", 10);
+}
+
+function speak(text) {
+    if (voice) {
+        let utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'en-US';
+        voice.cancel();
+        voice.speak(utterance);
+    }
+}
+
+function say(msg) {
+    if (!voiceEnabled) return;
+    let utter = new SpeechSynthesisUtterance(msg);
+    speechSynthesis.speak(utter);
+}
+</script>
+</body>
+</html>
+</content>
+</create_file>
 
